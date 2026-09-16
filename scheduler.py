@@ -61,6 +61,10 @@ def apply_settings(bot: Bot) -> None:
         existing_job.reschedule(trigger="interval", minutes=interval)
         logger.info("Интервал автопостинга обновлён: %s мин.", interval)
     else:
+        # next_run_time намеренно не передаём: APScheduler сам посчитает
+        # первый запуск как "сейчас + interval" (а не сразу же при создании
+        # задачи). Явная передача next_run_time=None ставит задачу на паузу
+        # навсегда — это была ошибка в предыдущей версии.
         _scheduler.add_job(
             publish_next_post,
             trigger="interval",
@@ -68,7 +72,6 @@ def apply_settings(bot: Bot) -> None:
             args=[bot],
             id=_JOB_ID,
             replace_existing=True,
-            next_run_time=None,  # первая публикация — через интервал, не сразу
         )
         logger.info("Задача автопостинга запущена с интервалом %s мин.", interval)
 
