@@ -16,22 +16,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections import defaultdict
 
-from aiogram import F, Router
+from aiogram import Router
 from aiogram.types import Message
 
 import database
 import utils
+from admin import IsAdmin
 
 logger = logging.getLogger(__name__)
 
-ADMIN_ID: int = int(os.environ["ADMIN_ID"])
 ALBUM_FLUSH_DELAY: float = 1.5  # секунд ожидания остальных частей альбома
 
 collector_router = Router(name="collector")
-collector_router.message.filter(F.from_user.id == ADMIN_ID)
+collector_router.message.filter(IsAdmin())
 
 # media_group_id -> список сообщений одного альбома, ещё не сохранённых
 _album_buffers: defaultdict[str, list[Message]] = defaultdict(list)

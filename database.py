@@ -108,6 +108,15 @@ def init_db(db_path: Path | str = DB_PATH) -> None:
             "CREATE INDEX IF NOT EXISTS idx_posts_brand_tag ON posts (brand_tag)"
         )
 
+        # Список админов бота (может пополняться командой /addadmin)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admins (
+                user_id INTEGER PRIMARY KEY
+            )
+            """
+        )
+
         # Единственная строка настроек (id всегда = 1)
         conn.execute(
             """
@@ -355,3 +364,49 @@ def count_posts_by_brand(db_path: Path | str = DB_PATH) -> dict[str, int]:
             """
         ).fetchall()
         return {row["brand_tag"]: int(row["cnt"]) for row in rows}
+
+
+# --------------------------------------------------------------------------- #
+# Администраторы
+# --------------------------------------------------------------------------- #
+
+def ensure_primary_admin(user_id: int, db_path: Path | str = DB_PATH) -> None:
+    """Добавляет владельца (ADMIN_ID из .env) в таблицу admins, если его там нет.
+    Вызывается один раз при старте бота — безопасна при повторном вызове."""
+    with get_connection(db_path) as conn:
+        conn.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+
+
+def is_admin(user_id: int, db_path: Path | str = DB_PATH) -> bool:
+    """Проверяет, есть ли пользователь в списке админов бота."""
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM admins WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return row is not None
+
+
+def add_admin(user_id: int, db_path: Path | str = DB_PATH) -> bool:
+    """Добавляет админа. Возвращает False, если он уже был в списке."""
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (user_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def remove_admin(user_id: int, db_path: Path | str = DB_PATH) -> bool:
+    """Удаляет админа. Возвращает False, если его и так не было в списке."""
+    with get_connection(db_path) as conn:
+        cursor = conn.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def list_admins(db_path: Path | str = DB_PATH) -> list[int]:
+    """Возвращает все id админов бота по возрастанию."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute("SELECT user_id FROM admins ORDER BY user_id ASC").fetchall()
+        return [int(row["user_id"]) for row in rows]

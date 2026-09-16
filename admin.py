@@ -3,7 +3,9 @@ handlers/admin.py
 
 Личный кабинет владельца канала: команда /start открывает inline-панель
 управления автопостингом (статус, бренд, интервал, статистика).
-Доступ ограничен ADMIN_ID.
+Доступ разрешён всем, кто есть в таблице admins (см. database.py) —
+изначально это ADMIN_ID из .env, дальше список можно пополнять командой
+/addadmin прямо из чата с ботом.
 """
 
 from __future__ import annotations
@@ -13,8 +15,10 @@ import os
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
+from aiogram.filters import BaseFilter, Command, CommandObject, CommandStart
 from aiogram.filters.callback_data import CallbackData
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -23,13 +27,22 @@ import scheduler
 
 logger = logging.getLogger(__name__)
 
-ADMIN_ID: int = int(os.environ["ADMIN_ID"])
+PRIMARY_ADMIN_ID: int = int(os.environ["ADMIN_ID"])
 
 INTERVAL_PRESETS_MINUTES: list[int] = [15, 30, 60, 120, 240]
 
+
+class IsAdmin(BaseFilter):
+    """Пропускает только пользователей, которые есть в таблице admins."""
+
+    async def __call__(self, event: Message | CallbackQuery) -> bool:
+        user = event.from_user
+        return user is not None and database.is_admin(user.id)
+
+
 admin_router = Router(name="admin")
-admin_router.message.filter(F.from_user.id == ADMIN_ID)
-admin_router.callback_query.filter(F.from_user.id == ADMIN_ID)
+admin_router.message.filter(IsAdmin())
+admin_router.callback_query.filter(IsAdmin())
 
 
 # --------------------------------------------------------------------------- #
@@ -39,6 +52,11 @@ admin_router.callback_query.filter(F.from_user.id == ADMIN_ID)
 class MenuCallback(CallbackData, prefix="menu"):
     action: str
     value: str = ""
+
+
+class IntervalInput(StatesGroup):
+    """Ожидание, пока админ введёт свой интервал в минутах текстом."""
+    waiting_minutes = State()
 
 
 # --------------------------------------------------------------------------- #
@@ -149,9 +167,20 @@ def build_interval_menu() -> tuple[str, InlineKeyboardMarkup]:
             text=f"{mark}{format_interval(minutes)}",
             callback_data=MenuCallback(action="interval_set", value=str(minutes)),
         )
-
-    builder.button(text="⬅️ Назад", callback_data=MenuCallback(action="main"))
     builder.adjust(2)
+
+    builder.row(
+        InlineKeyboardButton(
+            text="✏️ Свой интервал (мин)",
+            callback_data=MenuCallback(action="interval_custom").pack(),
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=MenuCallback(action="main").pack(),
+        )
+    )
     return text, builder.as_markup()
 
 
@@ -202,6 +231,68 @@ async def _render(message: Message, text: str, markup: InlineKeyboardMarkup) -> 
 async def cmd_start(message: Message) -> None:
     text, markup = build_main_menu()
     await message.answer(text, reply_markup=markup)
+
+
+# --------------------------------------------------------------------------- #
+# Управление списком админов
+# --------------------------------------------------------------------------- #
+
+def _parse_user_id(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw.lstrip("-").isdigit():
+        return None
+    return int(raw)
+
+
+@admin_router.message(Command("admins"))
+async def cmd_list_admins(message: Message) -> None:
+    ids = database.list_admins()
+    lines = ["<b>👤 Админы бота</b>", ""]
+    for user_id in ids:
+        owner_mark = " (владелец, из .env)" if user_id == PRIMARY_ADMIN_ID else ""
+        lines.append(f"• <code>{user_id}</code>{owner_mark}")
+    lines.append("")
+    lines.append("Добавить: /addadmin ID")
+    lines.append("Убрать: /removeadmin ID")
+    await message.reply("\n".join(lines))
+
+
+@admin_router.message(Command("addadmin"))
+async def cmd_add_admin(message: Message, command: CommandObject) -> None:
+    new_id = _parse_user_id(command.args)
+    if new_id is None:
+        await message.reply(
+            "Использование: <code>/addadmin ID</code>\n"
+            "Узнать ID человека можно через бота @userinfobot — "
+            "пусть перешлёт вам его ответ, либо он сам вам его пришлёт."
+        )
+        return
+
+    added = database.add_admin(new_id)
+    if added:
+        await message.reply(f"✅ Пользователь <code>{new_id}</code> теперь админ бота.")
+    else:
+        await message.reply(f"Пользователь <code>{new_id}</code> уже был в списке админов.")
+
+
+@admin_router.message(Command("removeadmin"))
+async def cmd_remove_admin(message: Message, command: CommandObject) -> None:
+    target_id = _parse_user_id(command.args)
+    if target_id is None:
+        await message.reply("Использование: <code>/removeadmin ID</code>")
+        return
+
+    if len(database.list_admins()) <= 1:
+        await message.reply("⚠️ Нельзя удалить последнего оставшегося админа.")
+        return
+
+    removed = database.remove_admin(target_id)
+    if removed:
+        await message.reply(f"✅ Пользователь <code>{target_id}</code> больше не админ.")
+    else:
+        await message.reply(f"Пользователя <code>{target_id}</code> и так не было в списке.")
 
 
 # --------------------------------------------------------------------------- #
@@ -268,6 +359,62 @@ async def cb_interval_set(query: CallbackQuery, callback_data: MenuCallback) -> 
     text, markup = build_main_menu()
     await _render(query.message, text, markup)
     await query.answer(f"Интервал: {format_interval(minutes)}")
+
+
+@admin_router.callback_query(MenuCallback.filter(F.action == "interval_custom"))
+async def cb_interval_custom(query: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(IntervalInput.waiting_minutes)
+    # Запоминаем id сообщения с панелью, чтобы потом отредактировать именно его.
+    await state.update_data(panel_message_id=query.message.message_id)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ Отмена", callback_data=MenuCallback(action="interval_menu"))
+
+    await _render(
+        query.message,
+        "<b>✏️ Свой интервал</b>\n\n"
+        "Пришлите одним сообщением число минут (целое, от 1).\n"
+        "Например: <code>45</code>",
+        builder.as_markup(),
+    )
+    await query.answer()
+
+
+@admin_router.message(IntervalInput.waiting_minutes)
+async def on_interval_custom_input(message: Message, state: FSMContext) -> None:
+    raw = (message.text or "").strip()
+
+    if not raw.isdigit() or int(raw) < 1:
+        await message.reply(
+            "⚠️ Нужно целое число минут, не меньше 1. Например: 45.\n"
+            "Попробуйте ещё раз, или нажмите «⬅️ Отмена» в панели выше."
+        )
+        return
+
+    minutes = int(raw)
+    database.update_settings(interval_minutes=minutes)
+    scheduler.apply_settings(message.bot)
+
+    data = await state.get_data()
+    await state.clear()
+
+    text, markup = build_main_menu()
+    panel_message_id = data.get("panel_message_id")
+
+    if panel_message_id is not None:
+        try:
+            await message.bot.edit_message_text(
+                text,
+                chat_id=message.chat.id,
+                message_id=panel_message_id,
+                reply_markup=markup,
+            )
+        except TelegramBadRequest:
+            await message.answer(text, reply_markup=markup)
+    else:
+        await message.answer(text, reply_markup=markup)
+
+    await message.reply(f"✅ Интервал установлен: {format_interval(minutes)}")
 
 
 @admin_router.callback_query(MenuCallback.filter(F.action == "stats"))

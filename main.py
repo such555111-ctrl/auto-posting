@@ -53,6 +53,7 @@ def _apply_env_target_channel() -> None:
 
 async def on_startup(bot: Bot) -> None:
     database.init_db()
+    database.ensure_primary_admin(int(os.environ["ADMIN_ID"]))
     _apply_env_target_channel()
     scheduler.start_scheduler(bot)
     logger.info("Бот запущен.")
