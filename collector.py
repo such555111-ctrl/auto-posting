@@ -18,7 +18,7 @@ import asyncio
 import logging
 from collections import defaultdict
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.types import Message
 
 import database
