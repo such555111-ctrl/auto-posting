@@ -1,0 +1,46 @@
+# Render Blueprint — деплой одним кликом (New + → Blueprint → выбрать этот репозиторий).
+#
+# По умолчанию сервис настроен как Web Service на бесплатном тарифе:
+# aiogram работает через long polling (не webhook), а health-check сервер
+# в main.py слушает $PORT — это нужно только для того, чтобы Render считал
+# деплой "живым". Реальный HTTP-трафик боту не нужен.
+#
+# ВАЖНО про бесплатный тариф:
+#   1. Free-инстанс "засыпает" без ВХОДЯЩИХ HTTP-запросов ~15 минут — а его
+#      публичный URL никто, кроме вас, не дёргает. Подключите бесплатный
+#      пинг-сервис (например cron-job.org или UptimeRobot) на URL сервиса
+#      каждые 5–10 минут, чтобы бот не засыпал.
+#   2. На бесплатном тарифе нет persistent-диска — при каждом "пробуждении"
+#      после сна или при редеплое файл autoposter.db создаётся заново,
+#      и все собранные посты теряются. Free-тариф годится для теста бота,
+#      но не для боевого использования.
+#
+# Для боевого использования замените plan на "starter" (от $7/мес) и
+# раскомментируйте блок disk ниже — тогда база будет переживать рестарты.
+# Тип сервиса можно сменить на "worker" (Background Worker) — тогда
+# health-check и $PORT не нужны, но Background Worker всегда платный.
+
+services:
+  - type: web
+    name: autoposter-bot
+    env: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: TARGET_CHANNEL_ID
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.12.3
+    # disk:
+    #   name: autoposter-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # envVars (добавить вместе с диском выше):
+    #   - key: DB_PATH
+    #     value: /var/data/autoposter.db
